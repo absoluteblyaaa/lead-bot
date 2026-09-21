@@ -15,10 +15,10 @@ from aiogram.types import (
 )
 
 # -------------------------------------------------------------------
-# НАСТРОЙКИ (В будущем меняются под клиента)
+# НАСТРОЙКИ (Меняются под клиента)
 # -------------------------------------------------------------------
-TOKEN = "8906348070:AAHrbZIl5jT_Lt99VYEU6V1srCUTToU8Tl0"  # Укажи токен своего бота
-ADMIN_ID = 5113398392  # Твой Telegram ID для получения заявок
+TOKEN = "8906348070:AAHrbZI15jT_Lt99VYEU6V1srCUTToU8Tl0"  # Твой токен
+ADMIN_ID = 5113398392  # Твой Telegram ID
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -56,7 +56,7 @@ class LeadForm(StatesGroup):
 # -------------------------------------------------------------------
 # КЛАВИАТУРЫ
 # -------------------------------------------------------------------
-def main_menu_keyboard():
+def main_menu_keyboard(user_id: int):
     kb = [
         [
             InlineKeyboardButton(
@@ -72,6 +72,16 @@ def main_menu_keyboard():
             ),
         ],
     ]
+    # Показываем кнопку просмотра БД только админу
+    if user_id == ADMIN_ID:
+        kb.append(
+            [
+                InlineKeyboardButton(
+                    text="📊 Заявки (Админ)", callback_data="admin_requests"
+                )
+            ]
+        )
+
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -100,7 +110,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await message.answer(
         f"Привет, {message.from_user.first_name}! 👋\n\n"
         "Я бот для приёма заявок. Выберите нужное действие в меню ниже:",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
 
@@ -114,7 +124,8 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
         reply_markup=ReplyKeyboardRemove(),
     )
     await message.answer(
-        "Чем ещё могу помочь?", reply_markup=main_menu_keyboard()
+        "Чем ещё могу помочь?",
+        reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
 
@@ -124,7 +135,7 @@ async def process_about(callback: types.CallbackQuery):
     await callback.message.edit_text(
         "ℹ️ **О нас:**\nМы предоставляем самые качественные услуги в городе! Быстро, надежно и с гарантией.",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(callback.from_user.id),
     )
     await callback.answer()
 
@@ -134,8 +145,33 @@ async def process_contacts(callback: types.CallbackQuery):
     await callback.message.edit_text(
         "📞 **Наши контакты:**\n• Телефон: +7 (999) 000-00-00\n• Telegram: @admin\n• Режим работы: 9:00 - 21:00",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(callback.from_user.id),
     )
+    await callback.answer()
+
+
+# Просмотр базы данных по КНОПКЕ для админа
+@dp.callback_query(F.data == "admin_requests")
+async def process_admin_requests(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("У вас нет доступа.", show_alert=True)
+        return
+
+    cursor.execute(
+        "SELECT id, name, phone, service, created_at FROM leads ORDER BY id DESC LIMIT 10"
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await callback.message.answer("Заявок пока нет.")
+        await callback.answer()
+        return
+
+    text = "📋 **Последние 10 заявок из базы:**\n\n"
+    for row in rows:
+        text += f"№{row[0]} | {row[1]} | `{row[2]}` | {row[3]} | {row[4]}\n"
+
+    await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
 
 
@@ -166,12 +202,10 @@ async def process_name(message: types.Message, state: FSMContext):
 # Шаг 2: Получение и валидация телефона
 @dp.message(LeadForm.phone)
 async def process_phone(message: types.Message, state: FSMContext):
-    # Если поделились контактом через кнопку
     if message.contact:
         phone = message.contact.phone_number
     else:
         phone = message.text
-        # Простейшая валидация (проверяем, есть ли цифры и длина от 7)
         clean_phone = re.sub(r"\D", "", phone)
         if len(clean_phone) < 7:
             await message.answer(
@@ -215,10 +249,11 @@ async def process_service(message: types.Message, state: FSMContext):
         reply_markup=ReplyKeyboardRemove(),
     )
     await message.answer(
-        "Главное меню:", reply_markup=main_menu_keyboard()
+        "Главное меню:",
+        reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
-    # 3. МГНОВЕННОЕ УВЕДОМЛЕНИЕ АДМИНУВ ЛС
+    # 3. Мгновенное уведомление админу в ЛС
     admin_text = (
         "🚨 **НОВАЯ ЗАЯВКА!**\n\n"
         f"👤 **Имя:** {data['name']}\n"
@@ -235,33 +270,11 @@ async def process_service(message: types.Message, state: FSMContext):
         print(f"Ошибка отправки админу: {e}")
 
 
-# Команда просмотра заявок для админа (/requests)
-@dp.message(Command("requests"))
-async def cmd_requests(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    cursor.execute(
-        "SELECT id, name, phone, service, created_at FROM leads ORDER BY id DESC LIMIT 10"
-    )
-    rows = cursor.fetchall()
-
-    if not rows:
-        await message.answer("Заявок пока нет.")
-        return
-
-    text = "📋 **Последние 10 заявок:**\n\n"
-    for row in rows:
-        text += f"№{row[0]} | {row[1]} | `{row[2]}` | {row[3]} | {row[4]}\n"
-
-    await message.answer(text, parse_mode="Markdown")
-
-
 # -------------------------------------------------------------------
 # ЗАПУСК
 # -------------------------------------------------------------------
 async def main():
-    print("Бот с кнопками и уведомлениями запущен!")
+    print("Бот с админ-кнопкой и уведомлениями запущен!")
     await dp.start_polling(bot)
 
 

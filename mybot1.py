@@ -15,10 +15,10 @@ from aiogram.types import (
 )
 
 # -------------------------------------------------------------------
-# НАСТРОЙКИ (Меняются под клиента)
+# НАСТРОЙКИ
 # -------------------------------------------------------------------
-TOKEN = "8906348070:AAHrbZI15jT_Lt99VYEU6V1srCUTToU8Tl0"  # Твой токен
-ADMIN_ID = 5113398392  # Твой Telegram ID
+TOKEN = "8906348070:AAHrbZI15jT_Lt99VYEU6V1srCUTToU8Tl0"
+ADMIN_ID = 5113398392
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -72,7 +72,6 @@ def main_menu_keyboard(user_id: int):
             ),
         ],
     ]
-    # Показываем кнопку просмотра БД только админу
     if user_id == ADMIN_ID:
         kb.append(
             [
@@ -99,11 +98,10 @@ def phone_keyboard():
 
 
 # -------------------------------------------------------------------
-# ХЕНДЛЕРЫ (ОБРАБОТЧИКИ)
+# ХЕНДЛЕРЫ
 # -------------------------------------------------------------------
 
 
-# Команда /start
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -114,7 +112,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
 
 
-# Отмена в любой момент
 @dp.message(Command("cancel"))
 @dp.message(F.text == "❌ Отмена")
 async def cmd_cancel(message: types.Message, state: FSMContext):
@@ -129,7 +126,6 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
     )
 
 
-# Нажатие на кнопки Главного Меню
 @dp.callback_query(F.data == "about")
 async def process_about(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -150,7 +146,6 @@ async def process_contacts(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# Просмотр базы данных по КНОПКЕ для админа
 @dp.callback_query(F.data == "admin_requests")
 async def process_admin_requests(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -175,7 +170,6 @@ async def process_admin_requests(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# Старт заполнения формы
 @dp.callback_query(F.data == "start_form")
 async def process_start_form(
     callback: types.CallbackQuery, state: FSMContext
@@ -188,7 +182,6 @@ async def process_start_form(
     await callback.answer()
 
 
-# Шаг 1: Получение имени
 @dp.message(LeadForm.name)
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
@@ -199,7 +192,6 @@ async def process_name(message: types.Message, state: FSMContext):
     )
 
 
-# Шаг 2: Получение и валидация телефона
 @dp.message(LeadForm.phone)
 async def process_phone(message: types.Message, state: FSMContext):
     if message.contact:
@@ -222,14 +214,12 @@ async def process_phone(message: types.Message, state: FSMContext):
     )
 
 
-# Шаг 3: Получение услуги + Финал
 @dp.message(LeadForm.service)
 async def process_service(message: types.Message, state: FSMContext):
     await state.update_data(service=message.text)
     data = await state.get_data()
     await state.clear()
 
-    # 1. Сохраняем в SQLite
     cursor.execute(
         "INSERT INTO leads (user_id, username, name, phone, service) VALUES (?, ?, ?, ?, ?)",
         (
@@ -242,7 +232,6 @@ async def process_service(message: types.Message, state: FSMContext):
     )
     conn.commit()
 
-    # 2. Отправляем ответ клиенту
     await message.answer(
         "🎉 **Спасибо! Ваша заявка принята.**\nМы свяжемся с вами в ближайшее время!",
         parse_mode="Markdown",
@@ -253,7 +242,6 @@ async def process_service(message: types.Message, state: FSMContext):
         reply_markup=main_menu_keyboard(message.from_user.id),
     )
 
-    # 3. Мгновенное уведомление админу в ЛС
     admin_text = (
         "🚨 **НОВАЯ ЗАЯВКА!**\n\n"
         f"👤 **Имя:** {data['name']}\n"
@@ -270,11 +258,8 @@ async def process_service(message: types.Message, state: FSMContext):
         print(f"Ошибка отправки админу: {e}")
 
 
-# -------------------------------------------------------------------
-# ЗАПУСК
-# -------------------------------------------------------------------
 async def main():
-    print("Бот с админ-кнопкой и уведомлениями запущен!")
+    print("Бот запущен!")
     await dp.start_polling(bot)
 
 

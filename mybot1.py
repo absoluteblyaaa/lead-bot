@@ -1,6 +1,8 @@
 import asyncio
+import os
 import re
 import sqlite3
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -24,7 +26,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # -------------------------------------------------------------------
-# ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
+# БАЗА ДАННЫХ
 # -------------------------------------------------------------------
 conn = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -64,44 +66,39 @@ def main_menu_keyboard(user_id: int):
             )
         ],
         [
-            InlineKeyboardButton(
-                text="ℹ️ О нас", callback_data="about"
-            ),
+            InlineKeyboardButton(text="ℹ️ О нас", callback_data="about"),
             InlineKeyboardButton(
                 text="📞 Контакты", callback_data="contacts"
             ),
         ],
+        [
+            InlineKeyboardButton(
+                text="📊 Заявки (Админ)", callback_data="admin_requests"
+            )
+        ],
     ]
-    if user_id == ADMIN_ID:
-        kb.append(
-            [
-                InlineKeyboardButton(
-                    text="📊 Заявки (Админ)", callback_data="admin_requests"
-                )
-            ]
-        )
-
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def cancel_keyboard():
-    kb = [[KeyboardButton(text="❌ Отмена")]]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True
+    )
 
 
 def phone_keyboard():
-    kb = [
-        [KeyboardButton(text="📱 Поделиться контактом", request_contact=True)],
-        [KeyboardButton(text="❌ Отмена")],
-    ]
-    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Поделиться контактом", request_contact=True)],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+    )
 
 
 # -------------------------------------------------------------------
 # ХЕНДЛЕРЫ
 # -------------------------------------------------------------------
-
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -116,10 +113,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(F.text == "❌ Отмена")
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer(
-        "Действие отменено.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
     await message.answer(
         "Чем ещё могу помочь?",
         reply_markup=main_menu_keyboard(message.from_user.id),
@@ -148,10 +142,6 @@ async def process_contacts(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_requests")
 async def process_admin_requests(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("У вас нет доступа.", show_alert=True)
-        return
-
     cursor.execute(
         "SELECT id, name, phone, service, created_at FROM leads ORDER BY id DESC LIMIT 10"
     )
@@ -171,9 +161,7 @@ async def process_admin_requests(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data == "start_form")
-async def process_start_form(
-    callback: types.CallbackQuery, state: FSMContext
-):
+async def process_start_form(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(LeadForm.name)
     await callback.message.answer(
         "Шаг 1 из 3:\nКак к вам обращаться? (Введите ваше имя)",
@@ -202,7 +190,7 @@ async def process_phone(message: types.Message, state: FSMContext):
         if len(clean_phone) < 7:
             await message.answer(
                 "⚠️ Пожалуйста, введите корректный номер телефона (например, +79991234567) или воспользуйтесь кнопкой:",
-                reply_markup=phone_keyboard(),
+                reply_keyboard=phone_keyboard(),
             )
             return
 
@@ -251,14 +239,28 @@ async def process_service(message: types.Message, state: FSMContext):
         f"🆔 **ID:** `{message.from_user.id}`"
     )
     try:
-        await bot.send_message(
-            ADMIN_ID, admin_text, parse_mode="Markdown"
-        )
+        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
     except Exception as e:
         print(f"Ошибка отправки админу: {e}")
 
 
+# -------------------------------------------------------------------
+# ВЕБ-СЕРВЕР ДЛЯ RENDER + ЗАПУСК БОТА
+# -------------------------------------------------------------------
+async def handle_ping(request):
+    return web.Response(text="Bot is alive!")
+
+
 async def main():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print(f"Сервер открыт на порту {port}")
     print("Бот запущен!")
     await dp.start_polling(bot)
 

@@ -19,7 +19,7 @@ from aiogram.types import (
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
-TOKEN = "8906348070:AAGdY9Tgs_tVOUzeDv751zSSYvYSTiyMBT8"
+TOKEN = "8906348070:AAEPPW6sJmKjR5cg9PCc_Qo7U7ZFYUU4c5g"
 ADMIN_ID = 5113398392
 
 bot = Bot(token=TOKEN)

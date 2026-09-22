@@ -3,6 +3,8 @@ import os
 import re
 import sqlite3
 import time
+import csv
+import io
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -16,16 +18,14 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
     BufferedInputFile,
 )
-import csv
-import io
 
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
-TOKEN = "8906348070:AAHnIDMz2_vQ_wSto329qYcIRflYpbA2fwk"
+TOKEN = "8906348070:AAHuveAtmw8kQ9z3Lj4oc26Poz5oC7lJroc"
 
-# Список ID администраторов/менеджеров (можно указать несколько через запятую)
-ADMIN_IDS = [5113398392]  # Добавь сюда ID других менеджеров, если нужно
+# Главный владелец бота (вшит в код, его нельзя случайно удалить из админов)
+OWNER_ID = 5113398392
 
 cooldowns = {}
 COOLDOWN_TIME = 60  # Секунд задержки между заявками для защиты от спама
@@ -34,7 +34,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # -------------------------------------------------------------------
-# БАЗА ДАННЫХ (LEADS + BANS)
+# БАЗА ДАННЫХ (LEADS + BANS + ADMINS)
 # -------------------------------------------------------------------
 conn = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -61,6 +61,18 @@ cursor.execute(
     )
 """
 )
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS admins (
+        user_id INTEGER PRIMARY KEY
+    )
+"""
+)
+conn.commit()
+
+# Автоматически добавляем главного владельца в базу админов при запуске
+cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (OWNER_ID,))
 conn.commit()
 
 
@@ -70,7 +82,13 @@ def is_banned(user_id: int) -> bool:
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    cursor.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
+    return cursor.fetchone() is not None
+
+
+def get_all_admins():
+    cursor.execute("SELECT user_id FROM admins")
+    return [row[0] for row in cursor.fetchall()]
 
 
 # -------------------------------------------------------------------
@@ -156,6 +174,56 @@ async def process_contacts(message: types.Message):
     )
 
 
+# Добавление админа через команду: /addadmin ID
+@dp.message(Command("addadmin"))
+async def cmd_add_admin(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Только главный владелец может добавлять администраторов.")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("⚠️ Использование: `/addadmin <TELEGRAM_ID>`", parse_mode="Markdown")
+        return
+
+    new_admin_id = int(parts[1])
+    cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (new_admin_id,))
+    conn.commit()
+
+    await message.answer(f"✅ Пользователь `{new_admin_id}` успешно назначен администратором!", parse_mode="Markdown")
+    try:
+        await bot.send_message(new_admin_id, "🎉 Вас назначили администратором/менеджером бота!", reply_markup=get_main_keyboard(new_admin_id))
+    except Exception:
+        pass
+
+
+# Удаление админа через команду: /deladmin ID
+@dp.message(Command("deladmin"))
+async def cmd_del_admin(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Только главный владелец может удалять администраторов.")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("⚠️ Использование: `/deladmin <TELEGRAM_ID>`", parse_mode="Markdown")
+        return
+
+    target_id = int(parts[1])
+    if target_id == OWNER_ID:
+        await message.answer("⛔ Нельзя удалить главного владельца бота.")
+        return
+
+    cursor.execute("DELETE FROM admins WHERE user_id = ?", (target_id,))
+    conn.commit()
+
+    await message.answer(f"🚫 Пользователь `{target_id}` лишен прав администратора.", parse_mode="Markdown")
+    try:
+        await bot.send_message(target_id, "⛔ Ваши права администратора были отозваны.", reply_markup=get_main_keyboard(target_id))
+    except Exception:
+        pass
+
+
 # CRM-панель администратора
 @dp.message(F.text == "📊 Панель управления (CRM)")
 async def process_admin_requests_btn(message: types.Message):
@@ -199,10 +267,31 @@ async def process_admin_requests_btn(message: types.Message):
         ])
         await message.answer(text, parse_mode="Markdown", reply_markup=kb)
 
-    menu_kb = InlineKeyboardMarkup(inline_keyboard=[
+    menu_buttons = [
         [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")]
-    ])
+    ]
+    if message.from_user.id == OWNER_ID:
+        menu_buttons.append([InlineKeyboardButton(text="👥 Список админов", callback_data="list_admins")])
+
+    menu_kb = InlineKeyboardMarkup(inline_keyboard=menu_buttons)
     await message.answer("Управление базой данных:", reply_markup=menu_kb)
+
+
+@dp.callback_query(F.data == "list_admins")
+async def process_list_admins(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+
+    admins = get_all_admins()
+    text = "👥 **Список текущих администраторов:**\n\n"
+    for idx, adm_id in enumerate(admins, 1):
+        role = "👑 Владелец" if adm_id == OWNER_ID else "🛡 Менеджер"
+        text += f"{idx}. ID: `{adm_id}` ({role})\n"
+
+    text += "\n💡 *Чтобы добавить нового:* `/addadmin ID`\n💡 *Чтобы удалить:* `/deladmin ID`"
+    await callback.message.answer(text, parse_mode="Markdown")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("status_"))
@@ -213,7 +302,6 @@ async def process_change_status(callback: types.CallbackQuery):
 
     _, lead_id, new_status = callback.data.split("_", 2)
     
-    # Узнаем user_id клиента по номеру заявки, чтобы отправить ему уведомление
     cursor.execute("SELECT user_id FROM leads WHERE id = ?", (lead_id,))
     lead_row = cursor.fetchone()
     
@@ -222,7 +310,6 @@ async def process_change_status(callback: types.CallbackQuery):
 
     await callback.answer(f"Статус заявки №{lead_id} изменен!")
     
-    # Отправляем клиенту уведомление об изменении статуса
     if lead_row:
         client_id = lead_row[0]
         try:
@@ -440,12 +527,13 @@ async def process_service(message: types.Message, state: FSMContext):
         f"🆔 **ID:** `{user_id}`"
     )
     
-    # Рассылаем заявку всем администраторам из списка ADMIN_IDS
-    for admin_id in ADMIN_IDS:
+    # Рассылаем заявку всем администраторам из базы данных
+    all_admins = get_all_admins()
+    for adm_id in all_admins:
         try:
-            await bot.send_message(admin_id, admin_text, parse_mode="Markdown")
+            await bot.send_message(adm_id, admin_text, parse_mode="Markdown")
         except Exception as e:
-            print(f"Ошибка отправки админу {admin_id}: {e}")
+            print(f"Ошибка отправки админу {adm_id}: {e}")
 
 
 async def handle_ping(request):
@@ -456,13 +544,15 @@ async def main():
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
-    await runner.setup()
+    app_setup = runner.setup()
+    if asyncio.iscoroutine(app_setup):
+        await app_setup
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
     print(f"Сервер открыт на порту {port}")
-    print("Бот успешно запущен с мульти-админкой и уведомлениями клиентов!")
+    print("Бот запущен! Админов теперь можно добавлять через команды /addadmin и кнопку в CRM.")
     await dp.start_polling(bot)
 
 

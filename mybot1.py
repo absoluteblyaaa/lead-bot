@@ -24,7 +24,7 @@ from aiogram.types import (
 # -------------------------------------------------------------------
 TOKEN = "8906348070:AAHuveAtmw8kQ9z3Lj4oc26Poz5oC7lJroc"
 
-# Главный владелец бота (вшит в код, его нельзя случайно удалить из админов)
+# Главный владелец бота (вшит в код, имеет полный доступ к админам)
 OWNER_ID = 5113398392
 
 cooldowns = {}
@@ -270,7 +270,9 @@ async def process_admin_requests_btn(message: types.Message):
     menu_buttons = [
         [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")]
     ]
-    if message.from_user.id == OWNER_ID:
+    
+    # Принудительная проверка для отображения кнопки админов
+    if message.from_user.id == OWNER_ID or message.from_user.id in get_all_admins():
         menu_buttons.append([InlineKeyboardButton(text="👥 Список админов", callback_data="list_admins")])
 
     menu_kb = InlineKeyboardMarkup(inline_keyboard=menu_buttons)
@@ -527,7 +529,6 @@ async def process_service(message: types.Message, state: FSMContext):
         f"🆔 **ID:** `{user_id}`"
     )
     
-    # Рассылаем заявку всем администраторам из базы данных
     all_admins = get_all_admins()
     for adm_id in all_admins:
         try:
@@ -552,7 +553,7 @@ async def main():
     await site.start()
 
     print(f"Сервер открыт на порту {port}")
-    print("Бот запущен! Админов теперь можно добавлять через команды /addadmin и кнопку в CRM.")
+    print("Бот полностью запущен и готов к работе!")
     await dp.start_polling(bot)
 
 

@@ -19,7 +19,7 @@ from aiogram.types import (
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
-TOKEN = "8906348070:AAEPPW6sJmKjR5cg9PCc_Qo7U7ZFYUU4c5g"
+TOKEN = "8906348070:AAHrbZI15jT_Lt99VYEU6V1srCUTToU8Tl0"
 ADMIN_ID = 5113398392
 
 bot = Bot(token=TOKEN)
@@ -71,18 +71,12 @@ def main_menu_keyboard(user_id: int):
                 text="📞 Контакты", callback_data="contacts"
             ),
         ],
+        [
+            InlineKeyboardButton(
+                text="📊 Заявки (Админ)", callback_data="admin_requests"
+            )
+        ],
     ]
-
-    # Показываем кнопку админа ТОЛЬКО владельцу (ADMIN_ID)
-    if user_id == ADMIN_ID:
-        kb.append(
-            [
-                InlineKeyboardButton(
-                    text="📊 Заявки (Админ)", callback_data="admin_requests"
-                )
-            ]
-        )
-
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -148,11 +142,6 @@ async def process_contacts(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_requests")
 async def process_admin_requests(callback: types.CallbackQuery):
-    # Проверка прав доступа
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ У вас нет доступа к этой функции.", show_alert=True)
-        return
-
     cursor.execute(
         "SELECT id, name, phone, service, created_at FROM leads ORDER BY id DESC LIMIT 10"
     )
@@ -201,7 +190,7 @@ async def process_phone(message: types.Message, state: FSMContext):
         if len(clean_phone) < 7:
             await message.answer(
                 "⚠️ Пожалуйста, введите корректный номер телефона (например, +79991234567) или воспользуйтесь кнопкой:",
-                reply_markup=phone_keyboard(),
+                reply_keyboard=phone_keyboard(),
             )
             return
 

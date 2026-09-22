@@ -536,8 +536,6 @@ async def process_service(message: types.Message, state: FSMContext):
             print(f"Ошибка отправки админу {adm_id}: {e}")
 
 
-async def handle_ping(request):
-    return web.Response(text="Bot is alive!")
 
 
 async def handle_ping(request):

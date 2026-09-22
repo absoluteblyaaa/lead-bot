@@ -14,7 +14,10 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    BufferedInputFile,
 )
+import csv
+import io
 
 # -------------------------------------------------------------------
 # НАСТРОЙКИ
@@ -30,6 +33,7 @@ dp = Dispatcher(storage=MemoryStorage())
 # -------------------------------------------------------------------
 conn = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = conn.cursor()
+
 cursor.execute(
     """
     CREATE TABLE IF NOT EXISTS leads (
@@ -39,6 +43,7 @@ cursor.execute(
         name TEXT,
         phone TEXT,
         service TEXT,
+        status TEXT DEFAULT '🔴 Новая',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
 """
@@ -71,12 +76,13 @@ def main_menu_keyboard(user_id: int):
                 text="📞 Контакты", callback_data="contacts"
             ),
         ],
-        [
-            InlineKeyboardButton(
-                text="📊 Заявки (Админ)", callback_data="admin_requests"
-            )
-        ],
     ]
+    if user_id == ADMIN_ID:
+        kb.append([
+            InlineKeyboardButton(
+                text="📊 Панель управления (CRM)", callback_data="admin_requests"
+            )
+        ])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -123,7 +129,7 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "about")
 async def process_about(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "ℹ️ **О нас:**\nМы предоставляем самые качественные услуги в городе! Быстро, надежно и с гарантией.",
+        "ℹ️ **О нас:**\nМы предоставляем самые качественные услуги! Быстро, надежно и с гарантией.",
         parse_mode="Markdown",
         reply_markup=main_menu_keyboard(callback.from_user.id),
     )
@@ -142,21 +148,110 @@ async def process_contacts(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_requests")
 async def process_admin_requests(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("У вас нет доступа!", show_alert=True)
+        return
+
     cursor.execute(
-        "SELECT id, name, phone, service, created_at FROM leads ORDER BY id DESC LIMIT 10"
+        "SELECT id, name, phone, service, status, created_at FROM leads ORDER BY id DESC LIMIT 5"
     )
     rows = cursor.fetchall()
 
     if not rows:
-        await callback.message.answer("Заявок пока нет.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
+        ])
+        await callback.message.edit_text("📋 Заявок в базе пока нет.", reply_markup=kb)
         await callback.answer()
         return
 
-    text = "📋 **Последние 10 заявок из базы:**\n\n"
-    for row in rows:
-        text += f"№{row[0]} | {row[1]} | `{row[2]}` | {row[3]} | {row[4]}\n"
+    await callback.message.delete()
+    await callback.message.answer("📊 **CRM — Управление заявками (Последние 5):**", parse_mode="Markdown")
 
-    await callback.message.answer(text, parse_mode="Markdown")
+    for row in rows:
+        lead_id, name, phone, service, status, created_at = row
+        text = (
+            f"📌 **Заявка №{lead_id}** [{status}]\n"
+            f"👤 Имя: {name}\n"
+            f"📞 Телефон: `{phone}`\n"
+            f"🛠 Услуга: {service}\n"
+            f"📅 Дата: {created_at}"
+        )
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔴 Новая", callback_data=f"status_{lead_id}_🔴 Новая"),
+                InlineKeyboardButton(text="🟡 В работе", callback_data=f"status_{lead_id}_🟡 В работе"),
+                InlineKeyboardButton(text="🟢 Закрыта", callback_data=f"status_{lead_id}_🟢 Закрыта"),
+            ]
+        ])
+        await callback.message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+    menu_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")],
+        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
+    ])
+    await callback.message.answer("Управление базой данных:", reply_markup=menu_kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("status_"))
+async def process_change_status(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещен", show_alert=True)
+        return
+
+    _, lead_id, new_status = callback.data.split("_", 2)
+    
+    cursor.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, lead_id))
+    conn.commit()
+
+    await callback.answer(f"Статус заявки №{lead_id} изменен!")
+    
+    original_text = callback.message.text
+    lines = original_text.split("\n")
+    if lines:
+        lines[0] = f"📌 **Заявка №{lead_id}** [{new_status}]"
+        updated_text = "\n".join(lines)
+        try:
+            await callback.message.edit_text(updated_text, parse_mode="Markdown", reply_markup=callback.message.reply_markup)
+        except Exception:
+            pass
+
+
+@dp.callback_query(F.data == "export_csv")
+async def process_export_csv(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещен", show_alert=True)
+        return
+
+    cursor.execute("SELECT id, user_id, username, name, phone, service, status, created_at FROM leads")
+    rows = cursor.fetchall()
+
+    if not rows:
+        await callback.answer("Нет данных для экспорта!", show_alert=True)
+        return
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(["ID", "User ID", "Username", "Имя", "Телефон", "Услуга", "Статус", "Дата создания"])
+    for row in rows:
+        writer.writerow(row)
+
+    csv_data = output.getvalue().encode('utf-8-sig')
+    file_bytes = BufferedInputFile(csv_data, filename="leads_export.csv")
+
+    await callback.message.answer_document(file_bytes, caption="📁 **Экспорт всех заявок готов!**\nЭтот файл можно открыть в Excel или Google Таблицах.", parse_mode="Markdown")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_menu")
+async def process_back_to_menu(callback: types.CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer(
+        "Главное меню:",
+        reply_markup=main_menu_keyboard(callback.from_user.id),
+    )
     await callback.answer()
 
 
@@ -190,7 +285,7 @@ async def process_phone(message: types.Message, state: FSMContext):
         if len(clean_phone) < 7:
             await message.answer(
                 "⚠️ Пожалуйста, введите корректный номер телефона (например, +79991234567) или воспользуйтесь кнопкой:",
-                reply_keyboard=phone_keyboard(),
+                reply_markup=phone_keyboard(),
             )
             return
 
@@ -231,7 +326,7 @@ async def process_service(message: types.Message, state: FSMContext):
     )
 
     admin_text = (
-        "🚨 **НОВАЯ ЗАЯВКА!**\n\n"
+        "🚨 **НОВАЯ ЗАЯВКА!** [🔴 Новая]\n\n"
         f"👤 **Имя:** {data['name']}\n"
         f"📞 **Телефон:** `{data['phone']}`\n"
         f"🛠 **Услуга:** {data['service']}\n\n"

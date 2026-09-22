@@ -180,7 +180,6 @@ async def process_admin_requests_btn(message: types.Message):
             f"📅 Дата: {created_at}"
         )
         
-        # Проверяем, в бане ли этот тип
         user_is_banned = is_banned(client_id)
         ban_button_text = "✅ Разбанить" if user_is_banned else "🚫 Бан"
         ban_callback = f"unban_{client_id}" if user_is_banned else f"ban_{client_id}"
@@ -225,7 +224,6 @@ async def process_change_status(callback: types.CallbackQuery):
             pass
 
 
-# Логика бана по кнопке из CRM
 @dp.callback_query(F.data.startswith("ban_"))
 async def process_ban_user(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -239,7 +237,6 @@ async def process_ban_user(callback: types.CallbackQuery):
 
     await callback.answer(f"🚫 Пользователь {target_id} заблокирован!", show_alert=True)
     
-    # Меняем кнопку на «Разбанить» прямо в интерфейсе
     old_markup = callback.message.reply_markup.inline_keyboard
     new_markup = []
     for row in old_markup:
@@ -257,7 +254,6 @@ async def process_ban_user(callback: types.CallbackQuery):
         pass
 
 
-# Логика разбана по кнопке из CRM
 @dp.callback_query(F.data.startswith("unban_"))
 async def process_unban_user(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
@@ -271,7 +267,6 @@ async def process_unban_user(callback: types.CallbackQuery):
 
     await callback.answer(f"✅ Пользователь {target_id} разблокирован!", show_alert=True)
     
-    # Меняем кнопку обратно на «Бан»
     old_markup = callback.message.reply_markup.inline_keyboard
     new_markup = []
     for row in old_markup:
@@ -315,9 +310,6 @@ async def process_export_csv(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# -------------------------------------------------------------------
-# ОФОРМЛЕНИЕ ЗАЯВКИ + ПРОВЕРКА НА БАН И СПАМ
-# -------------------------------------------------------------------
 @dp.message(F.text == "📝 Оставить заявку")
 async def process_start_form(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -432,9 +424,6 @@ async def process_service(message: types.Message, state: FSMContext):
         print(f"Ошибка отправки админу: {e}")
 
 
-# -------------------------------------------------------------------
-# ВЕБ-СЕРВЕР ДЛЯ RENDER + ЗАПУСК БОТА
-# -------------------------------------------------------------------
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
@@ -449,7 +438,7 @@ async def main():
     await site.start()
 
     print(f"Сервер открыт на порту {port}")
-    print("Бот запущен, защищен и с функцией черного списка!")
+    print("Бот запущен без всякой дичи с подписками!")
     await dp.start_polling(bot)
 
 

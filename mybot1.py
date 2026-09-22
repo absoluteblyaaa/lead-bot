@@ -271,7 +271,6 @@ async def process_admin_requests_btn(message: types.Message):
         [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")]
     ]
     
-    # Принудительная проверка для отображения кнопки админов
     if message.from_user.id == OWNER_ID or message.from_user.id in get_all_admins():
         menu_buttons.append([InlineKeyboardButton(text="👥 Список админов", callback_data="list_admins")])
 
@@ -541,10 +540,6 @@ async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
 
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 async def main():
     app = web.Application()
     app.router.add_get("/", handle_ping)
@@ -559,7 +554,11 @@ async def main():
     print(f"Сервер открыт на порту {port}")
     print("Бот полностью запущен и готов к работе!")
     
-    # ⬇️ ДОБАВЬ ЭТУ СТРОЧКУ СТРОГО СЮДА ⬇️
+    # Принудительно сбрасываем вебхук перед поллингом
     await bot.delete_webhook(drop_pending_updates=True)
     
     await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

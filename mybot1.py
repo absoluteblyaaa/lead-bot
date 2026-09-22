@@ -61,29 +61,23 @@ class LeadForm(StatesGroup):
 
 
 # -------------------------------------------------------------------
-# КЛАВИАТУРЫ
+# КЛАВИАТУРЫ (Красивое меню внизу экрана)
 # -------------------------------------------------------------------
-def main_menu_keyboard(user_id: int):
-    kb = [
-        [
-            InlineKeyboardButton(
-                text="📝 Оставить заявку", callback_data="start_form"
-            )
-        ],
-        [
-            InlineKeyboardButton(text="ℹ️ О нас", callback_data="about"),
-            InlineKeyboardButton(
-                text="📞 Контакты", callback_data="contacts"
-            ),
-        ],
-    ]
+def get_main_keyboard(user_id: int):
     if user_id == ADMIN_ID:
-        kb.append([
-            InlineKeyboardButton(
-                text="📊 Панель управления (CRM)", callback_data="admin_requests"
-            )
-        ])
-    return InlineKeyboardMarkup(inline_keyboard=kb)
+        # Меню для администратора (с кнопкой CRM-панели)
+        kb = [
+            [KeyboardButton(text="📝 Оставить заявку")],
+            [KeyboardButton(text="ℹ️ О нас"), KeyboardButton(text="📞 Контакты")],
+            [KeyboardButton(text="📊 Панель управления (CRM)")],
+        ]
+    else:
+        # Меню для обычного клиента
+        kb = [
+            [KeyboardButton(text="📝 Оставить заявку")],
+            [KeyboardButton(text="ℹ️ О нас"), KeyboardButton(text="📞 Контакты")],
+        ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
 def cancel_keyboard():
@@ -110,8 +104,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"Привет, {message.from_user.first_name}! 👋\n\n"
-        "Я бот для приёма заявок. Выберите нужное действие в меню ниже:",
-        reply_markup=main_menu_keyboard(message.from_user.id),
+        "Я бот для приёма заявок. Выберите нужное действие на клавиатуре внизу:",
+        reply_markup=get_main_keyboard(message.from_user.id),
     )
 
 
@@ -119,37 +113,30 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(F.text == "❌ Отмена")
 async def cmd_cancel(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Действие отменено.", reply_markup=get_main_keyboard(message.from_user.id))
+
+
+@dp.message(F.text == "ℹ️ О нас")
+async def process_about(message: types.Message):
     await message.answer(
-        "Чем ещё могу помочь?",
-        reply_markup=main_menu_keyboard(message.from_user.id),
-    )
-
-
-@dp.callback_query(F.data == "about")
-async def process_about(callback: types.CallbackQuery):
-    await callback.message.edit_text(
         "ℹ️ **О нас:**\nМы предоставляем самые качественные услуги! Быстро, надежно и с гарантией.",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(callback.from_user.id),
     )
-    await callback.answer()
 
 
-@dp.callback_query(F.data == "contacts")
-async def process_contacts(callback: types.CallbackQuery):
-    await callback.message.edit_text(
+@dp.message(F.text == "📞 Контакты")
+async def process_contacts(message: types.Message):
+    await message.answer(
         "📞 **Наши контакты:**\n• Телефон: +7 (999) 000-00-00\n• Telegram: @admin\n• Режим работы: 9:00 - 21:00",
         parse_mode="Markdown",
-        reply_markup=main_menu_keyboard(callback.from_user.id),
     )
-    await callback.answer()
 
 
-@dp.callback_query(F.data == "admin_requests")
-async def process_admin_requests(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("У вас нет доступа!", show_alert=True)
+# Кнопка CRM для админа (вместо команды /requests)
+@dp.message(F.text == "📊 Панель управления (CRM)")
+async def process_admin_requests_btn(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("У вас нет доступа!")
         return
 
     cursor.execute(
@@ -158,15 +145,10 @@ async def process_admin_requests(callback: types.CallbackQuery):
     rows = cursor.fetchall()
 
     if not rows:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
-        ])
-        await callback.message.edit_text("📋 Заявок в базе пока нет.", reply_markup=kb)
-        await callback.answer()
+        await message.answer("📋 Заявок в базе пока нет.")
         return
 
-    await callback.message.delete()
-    await callback.message.answer("📊 **CRM — Управление заявками (Последние 5):**", parse_mode="Markdown")
+    await message.answer("📊 **CRM — Управление заявками (Последние 5):**", parse_mode="Markdown")
 
     for row in rows:
         lead_id, name, phone, service, status, created_at = row
@@ -185,14 +167,12 @@ async def process_admin_requests(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="🟢 Закрыта", callback_data=f"status_{lead_id}_🟢 Закрыта"),
             ]
         ])
-        await callback.message.answer(text, parse_mode="Markdown", reply_markup=kb)
+        await message.answer(text, parse_mode="Markdown", reply_markup=kb)
 
     menu_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")],
-        [InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_menu")]
+        [InlineKeyboardButton(text="📥 Скачать все заявки (CSV / Excel)", callback_data="export_csv")]
     ])
-    await callback.message.answer("Управление базой данных:", reply_markup=menu_kb)
-    await callback.answer()
+    await message.answer("Управление базой данных:", reply_markup=menu_kb)
 
 
 @dp.callback_query(F.data.startswith("status_"))
@@ -241,28 +221,20 @@ async def process_export_csv(callback: types.CallbackQuery):
     csv_data = output.getvalue().encode('utf-8-sig')
     file_bytes = BufferedInputFile(csv_data, filename="leads_export.csv")
 
-    await callback.message.answer_document(file_bytes, caption="📁 **Экспорт всех заявок готов!**\nЭтот файл можно открыть в Excel или Google Таблицах.", parse_mode="Markdown")
+    await callback.message.answer_document(file_bytes, caption="📁 **Экспорт всех заявок готов!**", parse_mode="Markdown")
     await callback.answer()
 
 
-@dp.callback_query(F.data == "back_to_menu")
-async def process_back_to_menu(callback: types.CallbackQuery):
-    await callback.message.delete()
-    await callback.message.answer(
-        "Главное меню:",
-        reply_markup=main_menu_keyboard(callback.from_user.id),
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "start_form")
-async def process_start_form(callback: types.CallbackQuery, state: FSMContext):
+# -------------------------------------------------------------------
+# ЛОГИКА ЗАПОЛНЕНИЯ ЗАЯВКИ (FSM)
+# -------------------------------------------------------------------
+@dp.message(F.text == "📝 Оставить заявку")
+async def process_start_form(message: types.Message, state: FSMContext):
     await state.set_state(LeadForm.name)
-    await callback.message.answer(
+    await message.answer(
         "Шаг 1 из 3:\nКак к вам обращаться? (Введите ваше имя)",
         reply_markup=cancel_keyboard(),
     )
-    await callback.answer()
 
 
 @dp.message(LeadForm.name)
@@ -318,11 +290,7 @@ async def process_service(message: types.Message, state: FSMContext):
     await message.answer(
         "🎉 **Спасибо! Ваша заявка принята.**\nМы свяжемся с вами в ближайшее время!",
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    await message.answer(
-        "Главное меню:",
-        reply_markup=main_menu_keyboard(message.from_user.id),
+        reply_markup=get_main_keyboard(message.from_user.id),
     )
 
     admin_text = (

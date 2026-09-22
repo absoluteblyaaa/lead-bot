@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import sqlite3
+import time
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -25,11 +26,14 @@ import io
 TOKEN = "8906348070:AAHuveAtmw8kQ9z3Lj4oc26Poz5oC7lJroc"
 ADMIN_ID = 5113398392
 
+cooldowns = {}
+COOLDOWN_TIME = 60  # Секунд задержки между заявками для защиты от спама
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # -------------------------------------------------------------------
-# БАЗА ДАННЫХ
+# БАЗА ДАННЫХ (LEADS + BANS)
 # -------------------------------------------------------------------
 conn = sqlite3.connect("bot_data.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -48,7 +52,20 @@ cursor.execute(
     )
 """
 )
+
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS banned (
+        user_id INTEGER PRIMARY KEY
+    )
+"""
+)
 conn.commit()
+
+
+def is_banned(user_id: int) -> bool:
+    cursor.execute("SELECT 1 FROM banned WHERE user_id = ?", (user_id,))
+    return cursor.fetchone() is not None
 
 
 # -------------------------------------------------------------------
@@ -61,18 +78,16 @@ class LeadForm(StatesGroup):
 
 
 # -------------------------------------------------------------------
-# КЛАВИАТУРЫ (Красивое меню внизу экрана)
+# КЛАВИАТУРЫ
 # -------------------------------------------------------------------
 def get_main_keyboard(user_id: int):
     if user_id == ADMIN_ID:
-        # Меню для администратора (с кнопкой CRM-панели)
         kb = [
             [KeyboardButton(text="📝 Оставить заявку")],
             [KeyboardButton(text="ℹ️ О нас"), KeyboardButton(text="📞 Контакты")],
             [KeyboardButton(text="📊 Панель управления (CRM)")],
         ]
     else:
-        # Меню для обычного клиента
         kb = [
             [KeyboardButton(text="📝 Оставить заявку")],
             [KeyboardButton(text="ℹ️ О нас"), KeyboardButton(text="📞 Контакты")],
@@ -102,6 +117,10 @@ def phone_keyboard():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    if is_banned(message.from_user.id):
+        await message.answer("⛔ Вы заблокированы администратором бота.")
+        return
+
     await message.answer(
         f"Привет, {message.from_user.first_name}! 👋\n\n"
         "Я бот для приёма заявок. Выберите нужное действие на клавиатуре внизу:",
@@ -132,15 +151,15 @@ async def process_contacts(message: types.Message):
     )
 
 
-# Кнопка CRM для админа (вместо команды /requests)
+# CRM-панель администратора
 @dp.message(F.text == "📊 Панель управления (CRM)")
 async def process_admin_requests_btn(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("У вас нет доступа!")
+        await message.answer("⛔ У вас нет доступа к этой панели.")
         return
 
     cursor.execute(
-        "SELECT id, name, phone, service, status, created_at FROM leads ORDER BY id DESC LIMIT 5"
+        "SELECT id, user_id, name, phone, service, status, created_at FROM leads ORDER BY id DESC LIMIT 5"
     )
     rows = cursor.fetchall()
 
@@ -151,20 +170,27 @@ async def process_admin_requests_btn(message: types.Message):
     await message.answer("📊 **CRM — Управление заявками (Последние 5):**", parse_mode="Markdown")
 
     for row in rows:
-        lead_id, name, phone, service, status, created_at = row
+        lead_id, client_id, name, phone, service, status, created_at = row
         text = (
             f"📌 **Заявка №{lead_id}** [{status}]\n"
             f"👤 Имя: {name}\n"
             f"📞 Телефон: `{phone}`\n"
             f"🛠 Услуга: {service}\n"
+            f"🆔 ID клиента: `{client_id}`\n"
             f"📅 Дата: {created_at}"
         )
         
+        # Проверяем, в бане ли этот тип
+        user_is_banned = is_banned(client_id)
+        ban_button_text = "✅ Разбанить" if user_is_banned else "🚫 Бан"
+        ban_callback = f"unban_{client_id}" if user_is_banned else f"ban_{client_id}"
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔴 Новая", callback_data=f"status_{lead_id}_🔴 Новая"),
-                InlineKeyboardButton(text="🟡 В работе", callback_data=f"status_{lead_id}_🟡 В работе"),
-                InlineKeyboardButton(text="🟢 Закрыта", callback_data=f"status_{lead_id}_🟢 Закрыта"),
+                InlineKeyboardButton(text="🔴", callback_data=f"status_{lead_id}_🔴 Новая"),
+                InlineKeyboardButton(text="🟡", callback_data=f"status_{lead_id}_🟡 В работе"),
+                InlineKeyboardButton(text="🟢", callback_data=f"status_{lead_id}_🟢 Закрыта"),
+                InlineKeyboardButton(text=ban_button_text, callback_data=ban_callback),
             ]
         ])
         await message.answer(text, parse_mode="Markdown", reply_markup=kb)
@@ -178,7 +204,7 @@ async def process_admin_requests_btn(message: types.Message):
 @dp.callback_query(F.data.startswith("status_"))
 async def process_change_status(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещен", show_alert=True)
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
     _, lead_id, new_status = callback.data.split("_", 2)
@@ -199,10 +225,74 @@ async def process_change_status(callback: types.CallbackQuery):
             pass
 
 
+# Логика бана по кнопке из CRM
+@dp.callback_query(F.data.startswith("ban_"))
+async def process_ban_user(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+
+    target_id = int(callback.data.split("_")[1])
+    
+    cursor.execute("INSERT OR IGNORE INTO banned (user_id) VALUES (?)", (target_id,))
+    conn.commit()
+
+    await callback.answer(f"🚫 Пользователь {target_id} заблокирован!", show_alert=True)
+    
+    # Меняем кнопку на «Разбанить» прямо в интерфейсе
+    old_markup = callback.message.reply_markup.inline_keyboard
+    new_markup = []
+    for row in old_markup:
+        new_row = []
+        for btn in row:
+            if btn.callback_data.startswith("ban_"):
+                new_row.append(InlineKeyboardButton(text="✅ Разбанить", callback_data=f"unban_{target_id}"))
+            else:
+                new_row.append(btn)
+        new_markup.append(new_row)
+        
+    try:
+        await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_markup))
+    except Exception:
+        pass
+
+
+# Логика разбана по кнопке из CRM
+@dp.callback_query(F.data.startswith("unban_"))
+async def process_unban_user(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
+        return
+
+    target_id = int(callback.data.split("_")[1])
+    
+    cursor.execute("DELETE FROM banned WHERE user_id = ?", (target_id,))
+    conn.commit()
+
+    await callback.answer(f"✅ Пользователь {target_id} разблокирован!", show_alert=True)
+    
+    # Меняем кнопку обратно на «Бан»
+    old_markup = callback.message.reply_markup.inline_keyboard
+    new_markup = []
+    for row in old_markup:
+        new_row = []
+        for btn in row:
+            if btn.callback_data.startswith("unban_"):
+                new_row.append(InlineKeyboardButton(text="🚫 Бан", callback_data=f"ban_{target_id}"))
+            else:
+                new_row.append(btn)
+        new_markup.append(new_row)
+        
+    try:
+        await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_markup))
+    except Exception:
+        pass
+
+
 @dp.callback_query(F.data == "export_csv")
 async def process_export_csv(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещен", show_alert=True)
+        await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
     cursor.execute("SELECT id, user_id, username, name, phone, service, status, created_at FROM leads")
@@ -226,10 +316,26 @@ async def process_export_csv(callback: types.CallbackQuery):
 
 
 # -------------------------------------------------------------------
-# ЛОГИКА ЗАПОЛНЕНИЯ ЗАЯВКИ (FSM)
+# ОФОРМЛЕНИЕ ЗАЯВКИ + ПРОВЕРКА НА БАН И СПАМ
 # -------------------------------------------------------------------
 @dp.message(F.text == "📝 Оставить заявку")
 async def process_start_form(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    
+    if is_banned(user_id):
+        await message.answer("⛔ Вы заблокированы и не можете отправлять заявки.")
+        return
+
+    current_time = time.time()
+    if user_id != ADMIN_ID and user_id in cooldowns:
+        elapsed = current_time - cooldowns[user_id]
+        if elapsed < COOLDOWN_TIME:
+            remaining = int(COOLDOWN_TIME - elapsed)
+            await message.answer(
+                f"⏳ Пожалуйста, подождите еще {remaining} сек. перед отправкой новой заявки."
+            )
+            return
+
     await state.set_state(LeadForm.name)
     await message.answer(
         "Шаг 1 из 3:\nКак к вам обращаться? (Введите ваше имя)",
@@ -239,7 +345,12 @@ async def process_start_form(message: types.Message, state: FSMContext):
 
 @dp.message(LeadForm.name)
 async def process_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
+    name_text = message.text.strip()
+    if len(name_text) > 50:
+        await message.answer("⚠️ Имя слишком длинное. Введите корректное имя до 50 символов:")
+        return
+
+    await state.update_data(name=name_text)
     await state.set_state(LeadForm.phone)
     await message.answer(
         "Шаг 2 из 3:\nУкажите ваш номер телефона или нажмите кнопку ниже:",
@@ -252,9 +363,9 @@ async def process_phone(message: types.Message, state: FSMContext):
     if message.contact:
         phone = message.contact.phone_number
     else:
-        phone = message.text
+        phone = message.text.strip()
         clean_phone = re.sub(r"\D", "", phone)
-        if len(clean_phone) < 7:
+        if len(clean_phone) < 7 or len(phone) > 30:
             await message.answer(
                 "⚠️ Пожалуйста, введите корректный номер телефона (например, +79991234567) или воспользуйтесь кнопкой:",
                 reply_markup=phone_keyboard(),
@@ -271,18 +382,32 @@ async def process_phone(message: types.Message, state: FSMContext):
 
 @dp.message(LeadForm.service)
 async def process_service(message: types.Message, state: FSMContext):
-    await state.update_data(service=message.text)
+    user_id = message.from_user.id
+    if is_banned(user_id):
+        await state.clear()
+        await message.answer("⛔ Вы заблокированы.")
+        return
+
+    service_text = message.text.strip()
+    if len(service_text) > 150:
+        await message.answer("⚠️ Описание услуги слишком длинное. Сократите до 150 символов:")
+        return
+
     data = await state.get_data()
+    
+    if user_id != ADMIN_ID:
+        cooldowns[user_id] = time.time()
+
     await state.clear()
 
     cursor.execute(
         "INSERT INTO leads (user_id, username, name, phone, service) VALUES (?, ?, ?, ?, ?)",
         (
-            message.from_user.id,
+            user_id,
             message.from_user.username or "нет_юзернейма",
             data["name"],
             data["phone"],
-            data["service"],
+            service_text,
         ),
     )
     conn.commit()
@@ -290,16 +415,16 @@ async def process_service(message: types.Message, state: FSMContext):
     await message.answer(
         "🎉 **Спасибо! Ваша заявка принята.**\nМы свяжемся с вами в ближайшее время!",
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard(message.from_user.id),
+        reply_markup=get_main_keyboard(user_id),
     )
 
     admin_text = (
         "🚨 **НОВАЯ ЗАЯВКА!** [🔴 Новая]\n\n"
         f"👤 **Имя:** {data['name']}\n"
         f"📞 **Телефон:** `{data['phone']}`\n"
-        f"🛠 **Услуга:** {data['service']}\n\n"
+        f"🛠 **Услуга:** {service_text}\n\n"
         f"🔗 **Профиль:** @{message.from_user.username or 'отсутствует'}\n"
-        f"🆔 **ID:** `{message.from_user.id}`"
+        f"🆔 **ID:** `{user_id}`"
     )
     try:
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
@@ -324,7 +449,7 @@ async def main():
     await site.start()
 
     print(f"Сервер открыт на порту {port}")
-    print("Бот запущен!")
+    print("Бот запущен, защищен и с функцией черного списка!")
     await dp.start_polling(bot)
 
 

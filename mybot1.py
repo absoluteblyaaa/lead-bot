@@ -14,7 +14,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     BufferedInputFile,
 )
 import csv
@@ -24,7 +23,9 @@ import io
 # НАСТРОЙКИ
 # -------------------------------------------------------------------
 TOKEN = "8906348070:AAHnIDMz2_vQ_wSto329qYcIRflYpbA2fwk"
-ADMIN_ID = 5113398392
+
+# Список ID администраторов/менеджеров (можно указать несколько через запятую)
+ADMIN_IDS = [5113398392]  # Добавь сюда ID других менеджеров, если нужно
 
 cooldowns = {}
 COOLDOWN_TIME = 60  # Секунд задержки между заявками для защиты от спама
@@ -68,6 +69,10 @@ def is_banned(user_id: int) -> bool:
     return cursor.fetchone() is not None
 
 
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
 # -------------------------------------------------------------------
 # FSM (СОСТОЯНИЯ ФОРМЫ)
 # -------------------------------------------------------------------
@@ -81,7 +86,7 @@ class LeadForm(StatesGroup):
 # КЛАВИАТУРЫ
 # -------------------------------------------------------------------
 def get_main_keyboard(user_id: int):
-    if user_id == ADMIN_ID:
+    if is_admin(user_id):
         kb = [
             [KeyboardButton(text="📝 Оставить заявку")],
             [KeyboardButton(text="ℹ️ О нас"), KeyboardButton(text="📞 Контакты")],
@@ -154,7 +159,7 @@ async def process_contacts(message: types.Message):
 # CRM-панель администратора
 @dp.message(F.text == "📊 Панель управления (CRM)")
 async def process_admin_requests_btn(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ У вас нет доступа к этой панели.")
         return
 
@@ -202,16 +207,32 @@ async def process_admin_requests_btn(message: types.Message):
 
 @dp.callback_query(F.data.startswith("status_"))
 async def process_change_status(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
     _, lead_id, new_status = callback.data.split("_", 2)
     
+    # Узнаем user_id клиента по номеру заявки, чтобы отправить ему уведомление
+    cursor.execute("SELECT user_id FROM leads WHERE id = ?", (lead_id,))
+    lead_row = cursor.fetchone()
+    
     cursor.execute("UPDATE leads SET status = ? WHERE id = ?", (new_status, lead_id))
     conn.commit()
 
     await callback.answer(f"Статус заявки №{lead_id} изменен!")
+    
+    # Отправляем клиенту уведомление об изменении статуса
+    if lead_row:
+        client_id = lead_row[0]
+        try:
+            await bot.send_message(
+                client_id,
+                f"📌 **Обновление по заявке!**\nСтатус вашей заявки №{lead_id} изменен на: *{new_status}*",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Не удалось отправить уведомление клиенту: {e}")
     
     original_text = callback.message.text
     lines = original_text.split("\n")
@@ -226,7 +247,7 @@ async def process_change_status(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("ban_"))
 async def process_ban_user(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
@@ -256,7 +277,7 @@ async def process_ban_user(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("unban_"))
 async def process_unban_user(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
@@ -286,7 +307,7 @@ async def process_unban_user(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "export_csv")
 async def process_export_csv(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Доступ запрещен", show_alert=True)
         return
 
@@ -319,7 +340,7 @@ async def process_start_form(message: types.Message, state: FSMContext):
         return
 
     current_time = time.time()
-    if user_id != ADMIN_ID and user_id in cooldowns:
+    if not is_admin(user_id) and user_id in cooldowns:
         elapsed = current_time - cooldowns[user_id]
         if elapsed < COOLDOWN_TIME:
             remaining = int(COOLDOWN_TIME - elapsed)
@@ -387,7 +408,7 @@ async def process_service(message: types.Message, state: FSMContext):
 
     data = await state.get_data()
     
-    if user_id != ADMIN_ID:
+    if not is_admin(user_id):
         cooldowns[user_id] = time.time()
 
     await state.clear()
@@ -418,10 +439,13 @@ async def process_service(message: types.Message, state: FSMContext):
         f"🔗 **Профиль:** @{message.from_user.username or 'отсутствует'}\n"
         f"🆔 **ID:** `{user_id}`"
     )
-    try:
-        await bot.send_message(ADMIN_ID, admin_text, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Ошибка отправки админу: {e}")
+    
+    # Рассылаем заявку всем администраторам из списка ADMIN_IDS
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_text, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Ошибка отправки админу {admin_id}: {e}")
 
 
 async def handle_ping(request):
@@ -438,7 +462,7 @@ async def main():
     await site.start()
 
     print(f"Сервер открыт на порту {port}")
-    print("Бот запущен без всякой дичи с подписками!")
+    print("Бот успешно запущен с мульти-админкой и уведомлениями клиентов!")
     await dp.start_polling(bot)
 
 

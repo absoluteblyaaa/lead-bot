@@ -541,6 +541,10 @@ async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
 
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 async def main():
     app = web.Application()
     app.router.add_get("/", handle_ping)
@@ -554,8 +558,8 @@ async def main():
 
     print(f"Сервер открыт на порту {port}")
     print("Бот полностью запущен и готов к работе!")
+    
+    # ⬇️ ДОБАВЬ ЭТУ СТРОЧКУ СТРОГО СЮДА ⬇️
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
